@@ -9,7 +9,15 @@ use Cache::Memcached;  # deb libcache-memcached-perl
 #FIXME: common config
 my $memc_host = '127.0.0.1';
 my $memc_port = '11211';
-my $session_path = '/var/lib/php5';
+
+# Get session path and maxlifetime directly from PHP - requires php-cli to have consistent
+# settings with mod_php (for example). Achievable on Debian/Ubuntu by setting this path
+# in /etc/php5/conf.d/somefile.ini for example
+my $session_path = `echo "<?= ini_get('session.save_path');"|php`;
+die "no such directory $session_path" unless -d $session_path;
+
+my $maxlifetime = `echo "<?= ini_get('session.gc_maxlifetime');"|php`;
+die "unable to get php session maxlifetime" if $maxlifetime =~ m/[^0-9]/;
 
 # Init memc object
 my $memc = new Cache::Memcached;
@@ -33,7 +41,6 @@ sub start {
   print "starting\n";
   my $kernel = $_[KERNEL];
   open my $inotify_FH, "< &=" . $inotify->fileno or die "Can’t fdopen: $!\n";
-  $kernel->sig('HUP','sighup');
   $kernel->select_read($inotify_FH,'ev');
 }
 
@@ -56,9 +63,12 @@ sub ev_process {
       close SESS;
       if($c) {
         print "write to $name: $c\n";
-        $memc->set($name,$c);
+        $memc->set($name,$c,$maxlifetime);
       }
     }
+    # FIXME: must record and then check age somewhere
+    # so that server moving around doesn't expire other server's session
+    # shouldn't be a problem in most cases though
     elsif($ev->IN_DELETE) {
       $memc->delete($name);
       print "del $name\n"
